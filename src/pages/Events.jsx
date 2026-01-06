@@ -4,7 +4,7 @@ import { fetchCollection } from '../utils/supabaseHelpers';
 import { clearCache, getCachedData } from '../utils/cache';
 import { useAuth } from '../contexts/AuthContext';
 import { useRequireAuth } from '../utils/requireAuth';
-import { Calendar, Clock, MapPin, Image as ImageIcon, Video, Plus, X, CheckCircle } from 'lucide-react';
+import { Calendar, Clock, MapPin, Image as ImageIcon, Video, Plus, X, CheckCircle, FileText, Download } from 'lucide-react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import SkeletonLoader from '../components/SkeletonLoader';
 
@@ -15,7 +15,7 @@ const Events = () => {
   const [upcomingEvents, setUpcomingEvents] = useState([]);
   const [archivedEvents, setArchivedEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
-  const [eventView, setEventView] = useState('all'); // 'all', 'upcoming', 'archived'
+  const [eventView, setEventView] = useState('upcoming'); // 'upcoming', 'archived'
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [showArchiveForm, setShowArchiveForm] = useState(false);
@@ -34,6 +34,7 @@ const Events = () => {
     location: '',
     videoUrls: [],
     galleryImages: [],
+    documents: [],
   });
   const [archiveFormData, setArchiveFormData] = useState({
     title: '',
@@ -44,6 +45,7 @@ const Events = () => {
     location: '',
     videoUrls: [],
     galleryImages: [],
+    documents: [],
   });
 
   useEffect(() => {
@@ -64,10 +66,17 @@ const Events = () => {
       const upcoming = sortedData.filter(event => {
         // Upcoming events: type must be 'upcoming'
         if (event.type !== 'upcoming') return false;
-        // If date exists, it should be in the future
+        // Include both published and pending events
+        if (event.status && event.status !== 'published' && event.status !== 'pending') return false;
+        // If date exists, it should be in the future (or today)
         if (event.date) {
           const eventDate = event.date?.toDate ? event.date.toDate() : new Date(event.date);
-          return eventDate >= now;
+          // Set time to start of day for fair comparison
+          const eventDateStart = new Date(eventDate);
+          eventDateStart.setHours(0, 0, 0, 0);
+          const nowStart = new Date(now);
+          nowStart.setHours(0, 0, 0, 0);
+          return eventDateStart >= nowStart;
         }
         // If no date, include it in upcoming
         return true;
@@ -108,10 +117,17 @@ const Events = () => {
         const upcoming = sortedData.filter(event => {
           // Upcoming events: type must be 'upcoming'
           if (event.type !== 'upcoming') return false;
-          // If date exists, it should be in the future
+          // Include both published and pending events
+          if (event.status && event.status !== 'published' && event.status !== 'pending') return false;
+          // If date exists, it should be in the future (or today)
           if (event.date) {
             const eventDate = event.date?.toDate ? event.date.toDate() : new Date(event.date);
-            return eventDate >= now;
+            // Set time to start of day for fair comparison
+            const eventDateStart = new Date(eventDate);
+            eventDateStart.setHours(0, 0, 0, 0);
+            const nowStart = new Date(now);
+            nowStart.setHours(0, 0, 0, 0);
+            return eventDateStart >= nowStart;
           }
           // If no date, include it in upcoming
           return true;
@@ -169,7 +185,7 @@ const Events = () => {
     try {
       const urls = [];
       for (const file of Array.from(files)) {
-        const filePath = `events/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+        const filePath = `events/images/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
         const { data: uploadData, error: uploadError } = await supabase.storage
           .from('files')
           .upload(filePath, file);
@@ -198,6 +214,72 @@ const Events = () => {
     }
   };
 
+  const handleDocumentUpload = async (e, isArchive = false) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    if (!requireAuth('upload documents')) {
+      e.target.value = '';
+      return;
+    }
+    
+    if (isArchive) {
+      setArchiveUploading(true);
+    } else {
+      setUploading(true);
+    }
+    try {
+      const documentData = [];
+      for (const file of Array.from(files)) {
+        // Validate file size (max 10MB)
+        const maxSize = 10 * 1024 * 1024; // 10MB
+        if (file.size > maxSize) {
+          alert(`File "${file.name}" exceeds 10MB limit. Please choose a smaller file.`);
+          continue;
+        }
+        
+        const filePath = `events/documents/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('files')
+          .upload(filePath, file);
+        
+        if (uploadError) throw uploadError;
+        
+        const { data: urlData } = supabase.storage
+          .from('files')
+          .getPublicUrl(filePath);
+        
+        documentData.push({
+          url: urlData.publicUrl,
+          name: file.name,
+          size: file.size,
+        });
+      }
+      
+      if (isArchive) {
+        setArchiveFormData({ 
+          ...archiveFormData, 
+          documents: [...archiveFormData.documents, ...documentData] 
+        });
+      } else {
+        setFormData({ 
+          ...formData, 
+          documents: [...formData.documents, ...documentData] 
+        });
+      }
+    } catch (error) {
+      console.error('Error uploading documents:', error);
+      alert('Error uploading documents. Please try again.');
+    } finally {
+      if (isArchive) {
+        setArchiveUploading(false);
+      } else {
+        setUploading(false);
+      }
+      e.target.value = '';
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     
@@ -223,6 +305,7 @@ const Events = () => {
         type: formData.type || 'upcoming',
         video_urls: formData.videoUrls ? formData.videoUrls.filter(url => url.trim() !== '') : [],
         gallery_images: formData.galleryImages || [],
+        documents: formData.documents || [],
         status: 'pending',
         created_at: new Date().toISOString(),
         created_by: currentUser?.email || 'anonymous',
@@ -259,7 +342,58 @@ const Events = () => {
         location: '',
         videoUrls: [],
         galleryImages: [],
+        documents: [],
       });
+
+      // Refresh events list after successful submission
+      setTimeout(async () => {
+        try {
+          const data = await fetchCollection('events', {});
+          const sortedData = data.sort((a, b) => {
+            const dateA = a.date?.toDate ? a.date.toDate() : new Date(a.date || 0);
+            const dateB = b.date?.toDate ? b.date.toDate() : new Date(b.date || 0);
+            return dateB - dateA;
+          });
+          
+          setEvents(sortedData);
+          
+          const now = new Date();
+          const upcoming = sortedData.filter(event => {
+            // Upcoming events: type must be 'upcoming' and status should be 'published' or 'pending'
+            if (event.type !== 'upcoming') return false;
+            if (event.status && event.status !== 'published' && event.status !== 'pending') return false;
+            // If date exists, it should be in the future (or today)
+            if (event.date) {
+              const eventDate = event.date?.toDate ? event.date.toDate() : new Date(event.date);
+              // Set time to start of day for fair comparison
+              const eventDateStart = new Date(eventDate.setHours(0, 0, 0, 0));
+              const nowStart = new Date(now.setHours(0, 0, 0, 0));
+              return eventDateStart >= nowStart;
+            }
+            // If no date, include it in upcoming
+            return true;
+          });
+          const archived = sortedData.filter(event => {
+            // Archived events: type must be 'archive'
+            if (event.type === 'archive') return true;
+            // If type is 'upcoming', don't include in archived
+            if (event.type === 'upcoming') return false;
+            // For other types or no type, check if date is in the past
+            if (event.date) {
+              const eventDate = event.date?.toDate ? event.date.toDate() : new Date(event.date);
+              const eventDateStart = new Date(eventDate.setHours(0, 0, 0, 0));
+              const nowStart = new Date(now.setHours(0, 0, 0, 0));
+              return eventDateStart < nowStart;
+            }
+            return false;
+          });
+          
+          setUpcomingEvents(upcoming);
+          setArchivedEvents(archived);
+        } catch (error) {
+          console.error('Error refreshing events:', error);
+        }
+      }, 500);
 
       setTimeout(() => {
         setSubmitSuccess(false);
@@ -295,6 +429,7 @@ const Events = () => {
         type: archiveFormData.type || 'archive',
         video_urls: archiveFormData.videoUrls ? archiveFormData.videoUrls.filter(url => url.trim() !== '') : [],
         gallery_images: archiveFormData.galleryImages || [],
+        documents: archiveFormData.documents || [],
         status: 'pending',
         created_at: new Date().toISOString(),
         created_by: currentUser?.email || 'anonymous',
@@ -330,6 +465,7 @@ const Events = () => {
         location: '',
         videoUrls: [],
         galleryImages: [],
+        documents: [],
       });
 
       setTimeout(() => {
@@ -357,20 +493,41 @@ const Events = () => {
         </div>
       </div>
 
+      {/* Add Event Buttons - Always at Top */}
+      <section className="section-container py-6">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
+          {!showArchiveForm && (
+            <button
+              onClick={() => {
+                if (requireAuth('add archive events')) {
+                  setShowArchiveForm(true);
+                }
+              }}
+              className="btn-primary inline-flex items-center justify-center space-x-2 w-full sm:w-auto py-2.5 min-h-[44px]"
+            >
+              <Plus size={20} />
+              <span>Add Archive Events</span>
+            </button>
+          )}
+          {!showForm && (
+            <button
+              onClick={() => {
+                if (requireAuth('add a new event')) {
+                  setShowForm(true);
+                }
+              }}
+              className="btn-primary inline-flex items-center justify-center space-x-2 w-full sm:w-auto py-2.5 min-h-[44px]"
+            >
+              <Plus size={20} />
+              <span>Add New Events</span>
+            </button>
+          )}
+        </div>
+      </section>
+
       {/* Filter Buttons */}
       <section className="section-container py-8">
         <div className="flex flex-wrap gap-4 justify-center mb-8">
-          <button
-            type="button"
-            onClick={() => setEventView('all')}
-            className={`px-6 py-3 rounded-full font-semibold transition-colors ${
-              eventView === 'all'
-                ? 'bg-undp-blue text-white'
-                : 'bg-undp-light-grey text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            View All Events
-          </button>
           <button
             type="button"
             onClick={() => setEventView('upcoming')}
@@ -397,7 +554,7 @@ const Events = () => {
       </section>
 
       {/* Upcoming Events */}
-      {(eventView === 'all' || eventView === 'upcoming') && (upcomingEvents.length > 0 || loading) && (
+      {eventView === 'upcoming' && (upcomingEvents.length > 0 || loading) && (
         <section className="section-container py-12">
           <h2 className="text-2xl sm:text-3xl font-bold text-undp-blue mb-6 sm:mb-8">Upcoming Event{upcomingEvents.length > 1 ? 's' : ''}</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 lg:gap-8">
@@ -447,34 +604,6 @@ const Events = () => {
       {/* Archive Section */}
       <section className="bg-undp-light-grey py-12">
         <div className="section-container">
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4 mb-6 sm:mb-8">
-            {!showArchiveForm && (
-              <button
-                onClick={() => {
-                  if (requireAuth('add archive events')) {
-                    setShowArchiveForm(true);
-                  }
-                }}
-                className="btn-primary inline-flex items-center justify-center space-x-2 w-full sm:w-auto py-2.5 min-h-[44px]"
-              >
-                <Plus size={20} />
-                <span>Add Archive Events</span>
-              </button>
-            )}
-            {!showForm && (
-              <button
-                onClick={() => {
-                  if (requireAuth('add a new event')) {
-                    setShowForm(true);
-                  }
-                }}
-                className="btn-primary inline-flex items-center justify-center space-x-2 w-full sm:w-auto py-2.5 min-h-[44px]"
-              >
-                <Plus size={20} />
-                <span>Add New Events</span>
-              </button>
-            )}
-          </div>
 
           {/* Submission Form for Archive Events */}
           {showArchiveForm && (
@@ -673,6 +802,54 @@ const Events = () => {
                   )}
                 </div>
 
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Documents (PDF, Word, Excel, etc.)
+                  </label>
+                  <input
+                    type="file"
+                    multiple
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
+                    onChange={(e) => handleDocumentUpload(e, true)}
+                    id="archive-document-upload"
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor="archive-document-upload"
+                    className="btn-secondary cursor-pointer inline-flex items-center space-x-2"
+                  >
+                    <FileText size={18} />
+                    <span>{archiveUploading ? 'Uploading...' : 'Upload Documents'}</span>
+                  </label>
+                  {archiveFormData.documents.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      {archiveFormData.documents.map((doc, index) => (
+                        <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="flex items-center space-x-2 flex-1 min-w-0">
+                            <FileText size={18} className="text-undp-blue flex-shrink-0" />
+                            <span className="text-sm text-gray-700 truncate">{doc.name}</span>
+                            <span className="text-xs text-gray-500 flex-shrink-0">
+                              ({(doc.size / 1024).toFixed(1)} KB)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setArchiveFormData({
+                                ...archiveFormData,
+                                documents: archiveFormData.documents.filter((_, i) => i !== index),
+                              });
+                            }}
+                            className="text-red-600 hover:text-red-800 ml-2 flex-shrink-0"
+                          >
+                            <X size={18} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-center space-x-4 pt-4">
                   <button
                     type="button"
@@ -687,6 +864,7 @@ const Events = () => {
                         location: '',
                         videoUrls: [],
                         galleryImages: [],
+                        documents: [],
                       });
                       setArchiveSubmitSuccess(false);
                     }}
@@ -906,6 +1084,54 @@ const Events = () => {
                   )}
                 </div>
 
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Documents (PDF, Word, Excel, etc.)
+                  </label>
+                  <input
+                    type="file"
+                    multiple
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
+                    onChange={(e) => handleDocumentUpload(e, false)}
+                    id="document-upload-new"
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor="document-upload-new"
+                    className="btn-secondary cursor-pointer inline-flex items-center space-x-2"
+                  >
+                    <FileText size={18} />
+                    <span>{uploading ? 'Uploading...' : 'Upload Documents'}</span>
+                  </label>
+                  {formData.documents.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      {formData.documents.map((doc, index) => (
+                        <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="flex items-center space-x-2 flex-1 min-w-0">
+                            <FileText size={18} className="text-undp-blue flex-shrink-0" />
+                            <span className="text-sm text-gray-700 truncate">{doc.name}</span>
+                            <span className="text-xs text-gray-500 flex-shrink-0">
+                              ({(doc.size / 1024).toFixed(1)} KB)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFormData({
+                                ...formData,
+                                documents: formData.documents.filter((_, i) => i !== index),
+                              });
+                            }}
+                            className="text-red-600 hover:text-red-800 ml-2 flex-shrink-0"
+                          >
+                            <X size={18} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-center space-x-4 pt-4">
                   <button
                     type="button"
@@ -920,6 +1146,7 @@ const Events = () => {
                         location: '',
                         videoUrls: [],
                         galleryImages: [],
+                        documents: [],
                       });
                       setSubmitSuccess(false);
                     }}
@@ -943,7 +1170,7 @@ const Events = () => {
           )}
 
           {/* Archived Events List */}
-          {(eventView === 'all' || eventView === 'archived') && (
+          {eventView === 'archived' && (
             <>
               {eventView === 'archived' && (
                 <h2 className="text-2xl sm:text-3xl font-bold text-undp-blue mb-6 sm:mb-8">Archived Events</h2>
@@ -964,7 +1191,7 @@ const Events = () => {
                     <span className="text-sm">{formatDate(event.date)}</span>
                   </div>
                   <p className="text-gray-600 text-sm line-clamp-2">{event.description}</p>
-                  {(event.galleryImages?.length > 0 || event.videoUrls?.length > 0 || event.videoUrl) && (
+                  {(event.galleryImages?.length > 0 || event.videoUrls?.length > 0 || event.videoUrl || event.documents?.length > 0) && (
                     <div className="mt-4 flex items-center space-x-4 text-sm text-gray-500">
                       {event.galleryImages?.length > 0 && (
                         <span className="flex items-center">
@@ -976,6 +1203,12 @@ const Events = () => {
                         <span className="flex items-center">
                           <Video size={14} className="mr-1" />
                           {event.videoUrls?.length || 1} video{event.videoUrls?.length > 1 ? 's' : ''} available
+                        </span>
+                      )}
+                      {event.documents?.length > 0 && (
+                        <span className="flex items-center">
+                          <FileText size={14} className="mr-1" />
+                          {event.documents.length} document{event.documents.length > 1 ? 's' : ''}
                         </span>
                       )}
                     </div>
@@ -1083,6 +1316,54 @@ const Events = () => {
                         onClick={() => window.open(imageUrl, '_blank')}
                       />
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {selectedEvent.documents && selectedEvent.documents.length > 0 && (
+                <div>
+                  <h3 className="font-semibold text-gray-700 mb-4">Documents</h3>
+                  <div className="space-y-2">
+                    {selectedEvent.documents.map((doc, index) => {
+                      // Handle both object format {url, name, size} and string format (URL)
+                      const docUrl = typeof doc === 'string' ? doc : doc.url || doc;
+                      const docName = typeof doc === 'string' 
+                        ? `Document ${index + 1}` 
+                        : (doc.name || `Document ${index + 1}`);
+                      const docSize = typeof doc === 'object' && doc.size ? doc.size : null;
+                      
+                      return (
+                        <div
+                          key={index}
+                          className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition-colors"
+                        >
+                          <div className="flex items-center space-x-3 flex-1 min-w-0">
+                            <div className="bg-undp-blue rounded-lg p-2 flex-shrink-0">
+                              <FileText size={20} className="text-white" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">
+                                {docName}
+                              </p>
+                              {docSize && (
+                                <p className="text-xs text-gray-500 mt-1">
+                                  {(docSize / 1024).toFixed(1)} KB
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <a
+                            href={docUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn-primary ml-4 flex items-center space-x-2 whitespace-nowrap flex-shrink-0"
+                          >
+                            <Download size={18} />
+                            <span>Download</span>
+                          </a>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
